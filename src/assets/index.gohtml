@@ -66,7 +66,7 @@
         <div class="modal-content">
           <form id="uploadForm" action="/apps" method="post" enctype="multipart/form-data">
             <div class="modal-header">
-              <h5 class="modal-title">Upload App</h5>
+              <h5 class="modal-title" id="modalTitle">Upload App</h5>
               <button id="btnModalClose" type="button" class="btn-close"></button>
             </div>
             <div id="modalBody" class="modal-body">
@@ -124,6 +124,7 @@
                       required
                       readonly
                     />
+                    <div class="form-text" id="formUpdateNotice" hidden></div>
                   </div>
                   <div class="mb-2 col-md-8">
                     <label for="formProfile" class="form-label">Signing profile</label>
@@ -345,6 +346,8 @@
                       title="Injects tweaks into the app. Does not always work."
                       >?</a
                     >
+                    <div class="form-text mt-0 mb-1" id="formTweaksFromNotice" hidden></div>
+                    <input type="hidden" id="formTweaksFromId" name="{{.FormTweaksFromId}}" />
                     <input class="form-control" type="file" id="formTweaksSelect" multiple />
                     <input
                       class="form-control"
@@ -403,6 +406,18 @@
                     <div class="dropdown-menu">
                       <a class="dropdown-item dropdownCreateFrom" x-app-name="{{$app.Name}}" x-app-id="{{$app.Id}}"
                         >Create from...</a
+                      >
+                      <a
+                        class="dropdown-item dropdownUpdate"
+                        x-app-name="{{$app.Name}}"
+                        x-app-id="{{$app.Id}}"
+                        x-tweak-count="{{$app.TweakCount}}"
+                        x-profile-id="{{$app.ProfileId}}"
+                        x-builder-id="{{$app.BuilderId}}"
+                        x-sign-args="{{$app.SignArgs}}"
+                        x-user-bundle-id="{{$app.UserBundleId}}"
+                        x-bundle-name="{{$app.BundleName}}"
+                        >Update app...</a
                       >
                       <a class="dropdown-item" href="{{$app.RenameUrl}}">Rename...</a>
                       <a class="dropdown-item" href="{{$app.ResignUrl}}">Resign</a>
@@ -480,6 +495,18 @@
     const formIdEncode = document.getElementById("formIdEncode");
     const formIdPatch = document.getElementById("formIdPatch");
     const dropdownCreateFrom = document.getElementsByClassName("dropdownCreateFrom");
+    const dropdownUpdate = document.getElementsByClassName("dropdownUpdate");
+    const modalTitle = document.getElementById("modalTitle");
+    const formUpdateNotice = document.getElementById("formUpdateNotice");
+    const formTweaksFromId = document.getElementById("formTweaksFromId");
+    const formTweaksFromNotice = document.getElementById("formTweaksFromNotice");
+    const formBuilder = document.getElementById("formBuilder");
+    const formBundleName = document.getElementById("formBundleName");
+    const formIdForceOriginal = document.getElementById("formIdForceOriginal");
+    const formAppDebug = document.getElementById("formAppDebug");
+    const formAllDevices = document.getElementById("formAllDevices");
+    const formMac = document.getElementById("formMac");
+    const formFileShare = document.getElementById("formFileShare");
     const inputSearchFilter = document.getElementById("inputSearchFilter");
     const btnSearchClear = document.getElementById("btnSearchClear");
     const chkAutoRefresh = document.getElementById("chkAutoRefresh");
@@ -536,8 +563,94 @@
     modalElem.addEventListener("shown.bs.modal", function () {
       modalBody.style.minHeight = `30.5rem`;
     });
+    function pluralize(count, word) {
+      return `${count} ${word}${count === 1 ? "" : "s"}`;
+    }
+
+    // Switches the upload form in or out of "update" mode. When updating, the new app keeps
+    // the tweaks of the app being updated (the opposite of "Create from...").
+    function setUpdateSource(item) {
+      if (!item) {
+        modalTitle.textContent = "Upload App";
+        formTweaksFromId.value = "";
+        formUpdateNotice.hidden = true;
+        formTweaksFromNotice.hidden = true;
+        return;
+      }
+      const appName = item.getAttribute("x-app-name");
+      const tweakCount = parseInt(item.getAttribute("x-tweak-count"), 10) || 0;
+      modalTitle.textContent = "Update App";
+      formTweaksFromId.value = item.getAttribute("x-app-id");
+      formUpdateNotice.textContent =
+        tweakCount > 0
+          ? `Choose the new version of "${appName}". Its ${pluralize(tweakCount, "tweak")} will be kept, ` +
+            `and the options are pre-filled from it.`
+          : `Choose the new version of "${appName}". The options are pre-filled from it.`;
+      formUpdateNotice.hidden = false;
+      formTweaksFromNotice.textContent = `Keeping ${pluralize(tweakCount, "tweak")} from "${appName}". Tweaks added here will be injected as well.`;
+      formTweaksFromNotice.hidden = tweakCount === 0;
+    }
+
+    function selectOptionIfExists(select, value) {
+      for (let option of select.options) {
+        if (option.value === value && !option.disabled) {
+          select.value = value;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Pre-fills the form with the options the app was originally signed with.
+    function prefillSignOptions(item) {
+      if (!selectOptionIfExists(formProfile, item.getAttribute("x-profile-id"))) {
+        formProfile.value = "";
+      }
+      formProfile.dispatchEvent(new Event("change"));
+      selectOptionIfExists(formBuilder, item.getAttribute("x-builder-id"));
+
+      const args = item.getAttribute("x-sign-args").split(/\s+/);
+      formAllDevices.checked = args.includes("-a");
+      formMac.checked = args.includes("-m");
+      formAppDebug.checked = args.includes("-d");
+      formFileShare.checked = args.includes("-s");
+      formIdForceOriginal.checked = args.includes("-o");
+      formIdPatch.checked = args.includes("-p");
+      if (!formIdEncode.disabled) {
+        formIdEncode.checked = args.includes("-e");
+      }
+      if (args.includes("-b")) {
+        formIdCustom.checked = true;
+        formIdCustomText.value = item.getAttribute("x-user-bundle-id");
+      } else if (args.includes("-n") && !formIdProv.disabled) {
+        formIdProv.checked = true;
+      } else {
+        formIdOriginal.checked = true;
+      }
+      formIdCustom.dispatchEvent(new Event("change"));
+      formBundleName.value = item.getAttribute("x-bundle-name");
+    }
+
+    for (let item of dropdownUpdate) {
+      item.addEventListener("click", function () {
+        formFileId.value = "";
+        formFileText.hidden = true;
+        formFileText.value = "";
+        formFileSelect.hidden = false;
+        formFileSelect.disabled = false;
+        formFileUrl.hidden = true;
+        formFileUrl.disabled = true;
+        formFileUseUrl.disabled = false;
+        formFileUseUrl.checked = false;
+        setUpdateSource(item);
+        prefillSignOptions(item);
+        navMain.show();
+        modal.show();
+      });
+    }
     for (let item of dropdownCreateFrom) {
       item.addEventListener("click", function () {
+        setUpdateSource(null);
         formFileId.value = item.getAttribute("x-app-id");
         formFileText.hidden = false;
         formFileText.value = item.getAttribute("x-app-name");
@@ -551,6 +664,7 @@
       });
     }
     btnUploadApp.addEventListener("click", function () {
+      setUpdateSource(null);
       formFileId.value = "";
       formFileText.hidden = true;
       formFileText.value = "";

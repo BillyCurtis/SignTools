@@ -17,6 +17,13 @@ type App struct {
 	ProfileName         string
 	BundleId            string
 	TweakCount          int
+	// The settings the app was originally signed with,
+	// used to pre-fill the upload form when updating the app.
+	ProfileId    string
+	BuilderId    string
+	SignArgs     string
+	UserBundleId string
+	BundleName   string
 }
 
 const (
@@ -41,6 +48,7 @@ type FormNames struct {
 	FormFileId          string
 	FormFileUrl         string
 	FormTweakIds        string
+	FormTweaksFromId    string
 	FormProfileId       string
 	FormBuilderId       string
 	FormAppDebug        string
