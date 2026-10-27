@@ -42,6 +42,7 @@ var formNames = assets.FormNames{
 	FormFileId:          "file_id",
 	FormFileUrl:         "file_url",
 	FormTweakIds:        "tweak_ids",
+	FormTweaksFromId:    "tweaks_from_id",
 	FormProfileId:       "profile_id",
 	FormBuilderId:       "builder_id",
 	FormAppDebug:        "app_debug",
@@ -673,6 +674,27 @@ func uploadUnsignedApp(c echo.Context) error {
 			strings.TrimSuffix(fileName, filepath.Ext(fileName)), bundleName, filepath.Ext(fileName))
 	}
 	tweakMap := map[string]io.Reader{}
+	// When updating an app, carry over the tweaks of the app being updated.
+	// These are added first, so that newly uploaded tweaks with the same name take precedence.
+	if tweaksFromId := c.FormValue(formNames.FormTweaksFromId); tweaksFromId != "" {
+		sourceApp, ok := storage.Apps.Get(tweaksFromId)
+		if !ok {
+			return errors.New("no app to copy tweaks from with id " + tweaksFromId)
+		}
+		tweaks, err := sourceApp.ReadDir(storage.TweaksDir)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		for _, tweak := range tweaks {
+			tweakPath := storage.FSName(filepath.Join(string(storage.TweaksDir), tweak.Name()))
+			readonlyFile, err := sourceApp.GetFile(tweakPath)
+			if err != nil {
+				return err
+			}
+			defer readonlyFile.Close()
+			tweakMap[tweak.Name()] = readonlyFile
+		}
+	}
 	tweakIds := c.FormValue(formNames.FormTweakIds)
 	if tweakIds != "" {
 		for _, tweakId := range strings.Split(tweakIds, ",") {
@@ -814,6 +836,12 @@ func renderIndex(c echo.Context) error {
 			return err
 		}
 
+		// only used to pre-fill the upload form when updating, so missing values are not fatal
+		builderId, _ := app.GetString(storage.AppBuilderId)
+		signArgs, _ := app.GetString(storage.AppSignArgs)
+		userBundleId, _ := app.GetString(storage.AppUserBundleId)
+		bundleName, _ := app.GetString(storage.AppBundleName)
+
 		data.Apps = append(data.Apps, assets.App{
 			Id:                  app.GetId(),
 			Status:              status,
@@ -831,6 +859,11 @@ func renderIndex(c echo.Context) error {
 			DeleteUrl:           path.Join("/apps", app.GetId(), "delete"),
 			RenameUrl:           path.Join("/apps", app.GetId(), "rename"),
 			TweakCount:          tweakCount,
+			ProfileId:           profileId,
+			BuilderId:           builderId,
+			SignArgs:            signArgs,
+			UserBundleId:        userBundleId,
+			BundleName:          bundleName,
 		})
 	}
 	profiles, err := storage.Profiles.GetAll()

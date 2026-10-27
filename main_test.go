@@ -281,6 +281,86 @@ func uploadUnsigned(t *testing.T) {
 	assert.NoError(t, util.Check2xxCode(resp.StatusCode))
 }
 
+func tusUploadNamed(t *testing.T, data []byte, fileName string) string {
+	tusClient, err := tus.NewClient(config.Current.ServerUrl+"/tus/", nil)
+	assert.NoError(t, err)
+	upload := tus.NewUploadFromBytes(data)
+	upload.Metadata["filename"] = fileName
+	tusUpload, err := tusClient.CreateUpload(upload)
+	assert.NoError(t, err)
+	tusProgressChan := make(chan tus.Upload)
+	tusUpload.NotifyUploadProgress(tusProgressChan)
+	assert.NoError(t, tusUpload.Upload())
+	for progress := range tusProgressChan {
+		if progress.Finished() {
+			break
+		}
+	}
+	return path.Base(tusUpload.Url())
+}
+
+func readAppFile(t *testing.T, app storage.App, name storage.FSName) string {
+	file, err := app.GetFile(name)
+	assert.NoError(t, err)
+	defer file.Close()
+	b, err := io.ReadAll(file)
+	assert.NoError(t, err)
+	return string(b)
+}
+
+// Updating an app uploads a new version of it, keeping the tweaks of the old version.
+func TestUpdateAppKeepsTweaks(t *testing.T) {
+	profile, ok := storage.Profiles.GetById(profileId)
+	assert.True(t, ok)
+	oldApp, err := storage.Apps.New(strings.NewReader("app-v1"), "app-v1.ipa", profile, "-a -p", "", "selfhosted",
+		map[string]io.Reader{
+			"keep.deb":    strings.NewReader("tweak-keep"),
+			"replace.deb": strings.NewReader("tweak-old"),
+		})
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = storage.Apps.Delete(oldApp.GetId()) })
+
+	form := url.Values{
+		formNames.FormFileId:       {tusUploadNamed(t, []byte("app-v2"), "app-v2.ipa")},
+		formNames.FormTweakIds:     {tusUploadNamed(t, []byte("tweak-new"), "replace.deb")},
+		formNames.FormTweaksFromId: {oldApp.GetId()},
+		formNames.FormProfileId:    {profileId},
+		formNames.FormBuilderId:    {"selfhosted"},
+	}
+	req, err := http.NewRequest("POST", config.Current.ServerUrl+"/apps", strings.NewReader(form.Encode()))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	assert.NoError(t, util.Check2xxCode(resp.StatusCode))
+	// the upload queued a signing job, consume it so it does not leak into other tests
+	assert.True(t, storage.Jobs.DeleteById(takeJob(t)))
+
+	apps, err := storage.Apps.GetAll()
+	assert.NoError(t, err)
+	var newApp storage.App
+	for _, app := range apps {
+		if name, _ := app.GetString(storage.AppName); name == "app-v2.ipa" {
+			newApp = app
+		}
+	}
+	if !assert.NotNil(t, newApp) {
+		return
+	}
+	t.Cleanup(func() { _ = storage.Apps.Delete(newApp.GetId()) })
+
+	assert.Equal(t, "app-v2", readAppFile(t, newApp, storage.AppUnsignedFile))
+	tweaks, err := newApp.ReadDir(storage.TweaksDir)
+	assert.NoError(t, err)
+	assert.Len(t, tweaks, 2)
+	assert.Equal(t, "tweak-keep", readAppFile(t, newApp, storage.FSName(path.Join(string(storage.TweaksDir), "keep.deb"))))
+	// a newly uploaded tweak takes precedence over a kept one with the same name
+	assert.Equal(t, "tweak-new", readAppFile(t, newApp, storage.FSName(path.Join(string(storage.TweaksDir), "replace.deb"))))
+	// the old app is left untouched
+	assert.Equal(t, "app-v1", readAppFile(t, oldApp, storage.AppUnsignedFile))
+	assert.Equal(t, "tweak-old", readAppFile(t, oldApp, storage.FSName(path.Join(string(storage.TweaksDir), "replace.deb"))))
+}
+
 func TestEscapeXML(t *testing.T) {
 	escapedText, err := escapeXML("This & That")
 	assert.NoError(t, err)
